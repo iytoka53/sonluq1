@@ -1,4 +1,4 @@
-name: 24-7 PRO Streamer
+name: 24-7 PRO Streamer 2
 
 on:
   workflow_dispatch:
@@ -30,6 +30,7 @@ jobs:
             # Link mp4 de olsa, m3u8 (HLS) de olsa ffmpeg parcalari birlestirip video.mp4 yapar (encode yok)
             timeout 900 ffmpeg -hide_banner -loglevel warning -y \
               -user_agent "Mozilla/5.0" \
+              -allowed_extensions ALL -allowed_segment_extensions ALL \
               -i "$VID_URL" \
               -map 0:v:0 -map 0:a:0? \
               -c copy -movflags +faststart video.mp4 2>&1 | mask
