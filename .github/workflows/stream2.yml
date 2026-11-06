@@ -18,14 +18,27 @@ jobs:
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
-      - name: Download video
+      - name: Download video (encode yok, sadece kopyalama)
         env:
           VID_URL: ${{ secrets.VIDEO_URL }}
         run: |
-          curl -fsSL -A "Mozilla/5.0" --retry 5 --retry-delay 3 -o video.mp4 "$VID_URL"
-          SIZE=$(stat -c%s video.mp4)
-          echo "Boyut: $SIZE bayt"
-          [ "$SIZE" -gt 100000 ] || { echo "HATA: Indirilen dosya cok kucuk, link dogrudan video dosyasi degil"; exit 1; }
+          mask() { sed -u -e 's#[A-Za-z]*://[^ ]*#[gizli]#g' -e 's/[Tt][Ww][Ii][Tt][Cc][Hh]/PRO/g' -e 's/live-video\.net/gizli/g' -e 's/contribute/gizli/g'; }
+
+          ok=0
+          for i in 1 2 3; do
+            rm -f video.mp4
+            # Link mp4 de olsa, m3u8 (HLS) de olsa ffmpeg parcalari birlestirip video.mp4 yapar (encode yok)
+            timeout 900 ffmpeg -hide_banner -loglevel warning -y \
+              -user_agent "Mozilla/5.0" \
+              -i "$VID_URL" \
+              -map 0:v:0 -map 0:a:0? \
+              -c copy -movflags +faststart video.mp4 2>&1 | mask
+            SIZE=$(stat -c%s video.mp4 2>/dev/null || echo 0)
+            echo "Deneme $i - Boyut: $SIZE bayt"
+            if [ "$SIZE" -gt 100000 ]; then ok=1; break; fi
+            sleep 5
+          done
+          [ "$ok" = 1 ] || { echo "HATA: Video indirilemedi veya cok kucuk (link suresi dolmus/engellenmis olabilir)"; exit 1; }
 
       - name: Check video (sadece bilgi icin loga yazar)
         run: |
