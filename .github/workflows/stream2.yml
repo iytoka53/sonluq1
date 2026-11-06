@@ -1,13 +1,13 @@
-name: 24-7 PRO Streamer 2 (Canli Kaynak - Copy)
+name: 24-7 PRO Streamer
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */4 * * *' # Her 4 saatte bir kaynaga yeniden baglanir
+    - cron: '0 */4 * * *' # Her 4 saatte bir yeniden baslatir
 
 # Ayni anda sadece 1 yayin calissin; yenisi eskisi bitince baslasin
 concurrency:
-  group: pro-stream-2
+  group: pro-stream
   cancel-in-progress: false
 
 jobs:
@@ -18,31 +18,34 @@ jobs:
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
-      - name: Check source (sadece bilgi icin loga yazar)
+      - name: Download video
         env:
-          SRC_URL: ${{ secrets.SOURCE_URL }}
+          VID_URL: ${{ secrets.VIDEO_URL }}
         run: |
-          mask() { sed -u -e 's#[A-Za-z]*://[^ ]*#[gizli]#g' -e 's/[Tt][Ww][Ii][Tt][Cc][Hh]/PRO/g' -e 's/live-video\.net/gizli/g' -e 's/contribute/gizli/g'; }
+          curl -fsSL -A "Mozilla/5.0" --retry 5 --retry-delay 3 -o video.mp4 "$VID_URL"
+          SIZE=$(stat -c%s video.mp4)
+          echo "Boyut: $SIZE bayt"
+          [ "$SIZE" -gt 100000 ] || { echo "HATA: Indirilen dosya cok kucuk, link dogrudan video dosyasi degil"; exit 1; }
 
+      - name: Check video (sadece bilgi icin loga yazar)
+        run: |
           echo "--- VIDEO ---"
-          timeout 60 ffprobe -v error -rw_timeout 15000000 -select_streams v:0 \
-            -show_entries stream=codec_name,profile,width,height,r_frame_rate,bit_rate \
-            -of default=nw=1 "$SRC_URL" 2>&1 | mask || true
-
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,profile,width,height,r_frame_rate,bit_rate -of default=nw=1 video.mp4
           echo "--- SES ---"
-          timeout 60 ffprobe -v error -rw_timeout 15000000 -select_streams a:0 \
-            -show_entries stream=codec_name,sample_rate,channels,bit_rate \
-            -of default=nw=1 "$SRC_URL" 2>&1 | mask || true
+          ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels,bit_rate -of default=nw=1 video.mp4
+          echo "--- SURE ---"
+          ffprobe -v error -show_entries format=duration -of default=nw=1 video.mp4
+          echo "--- ILK 60 SN ANAHTAR KARE (keyframe) ZAMANLARI ---"
+          ffprobe -v error -select_streams v:0 -skip_frame nokey -show_entries frame=pts_time -read_intervals "%+60" -of csv=p=0 video.mp4 | head -n 30
 
-          echo "--- ANAHTAR KARE (keyframe) ZAMANLARI (yaklasik 25 sn) ---"
-          timeout 90 ffprobe -v error -rw_timeout 15000000 -select_streams v:0 \
-            -skip_frame nokey -show_entries frame=pts_time -read_intervals "%+25" \
-            -of csv=p=0 "$SRC_URL" 2>&1 | mask | head -n 12 || true
+          VC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 video.mp4)
+          AC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 video.mp4)
+          [ "$VC" = "h264" ] || echo "UYARI: video kodegi h264 degil ($VC), copy modunda yayin acilmayabilir"
+          [ "$AC" = "aac" ] || echo "UYARI: ses kodegi aac degil ($AC), copy modunda yayin acilmayabilir veya ses olmayabilir"
 
-      - name: Stream PRO (kaynak -> copy, encode yok)
+      - name: Stream PRO (video + ses copy, encode yok)
         env:
-          SRC_URL: ${{ secrets.SOURCE_URL }}
-          RTMP_URL: ${{ secrets.PRO2_RTMP }}
+          RTMP_URL: ${{ secrets.PRO_RTMP }}
         run: |
           mask() { sed -u -e 's#[A-Za-z]*://[^ ]*#[gizli]#g' -e 's/[Tt][Ww][Ii][Tt][Cc][Hh]/PRO/g' -e 's/live-video\.net/gizli/g' -e 's/contribute/gizli/g'; }
 
@@ -52,25 +55,16 @@ jobs:
             REMAIN=$(( END - $(date +%s) ))
             [ "$REMAIN" -lt 10 ] && break
 
-            echo "Kaynaga baglaniliyor... kalan sure: ${REMAIN} sn"
-            T0=$(date +%s)
+            echo "Yayin baslatiliyor... kalan sure: ${REMAIN} sn"
 
             timeout "$REMAIN" ffmpeg -hide_banner -loglevel warning \
               -fflags +genpts \
-              -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -rw_timeout 15000000 \
-              -i "$SRC_URL" \
-              -map 0:v:0 -map 0:a:0? \
+              -re -stream_loop -1 -i video.mp4 \
               -c copy \
               -f flv "$RTMP_URL" 2>&1 | mask
 
-            RUN=$(( $(date +%s) - T0 ))
-            if [ "$RUN" -lt 15 ]; then
-              echo "Cok kisa surdu (${RUN} sn), kaynak veya hedef kapali olabilir; 20 sn sonra tekrar deneniyor..."
-              sleep 20
-            else
-              echo "Yayin koptu, 5 sn sonra yeniden baglaniliyor..."
-              sleep 5
-            fi
+            echo "Yayin durdu veya koptu, 5 sn sonra yeniden baglaniliyor..."
+            sleep 5
           done
 
           echo "4 saatlik pencere doldu, workflow bitiyor (yenisi cron ile baslayacak)."
