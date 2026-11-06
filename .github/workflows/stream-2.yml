@@ -1,0 +1,84 @@
+name: 24-7 PRO Streamer
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */4 * * *' # Her 4 saatte bir yeniden baslatir
+
+# Ayni anda sadece 1 yayin calissin; yenisi eskisi bitince baslasin
+concurrency:
+  group: pro-stream
+  cancel-in-progress: false
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 270
+    steps:
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Download video (encode yok, sadece kopyalama)
+        env:
+          VID_URL: ${{ secrets.VIDEO_URL }}
+        run: |
+          mask() { sed -u -e 's#[A-Za-z]*://[^ ]*#[gizli]#g' -e 's/[Tt][Ww][Ii][Tt][Cc][Hh]/PRO/g' -e 's/live-video\.net/gizli/g' -e 's/contribute/gizli/g'; }
+
+          ok=0
+          for i in 1 2 3; do
+            rm -f video.mp4
+            # Link mp4 de olsa, m3u8 (HLS) de olsa ffmpeg parcalari birlestirip video.mp4 yapar (encode yok)
+            timeout 900 ffmpeg -hide_banner -loglevel warning -y \
+              -user_agent "Mozilla/5.0" \
+              -allowed_extensions ALL -allowed_segment_extensions ALL \
+              -i "$VID_URL" \
+              -map 0:v:0 -map 0:a:0? \
+              -c copy -movflags +faststart video.mp4 2>&1 | mask
+            SIZE=$(stat -c%s video.mp4 2>/dev/null || echo 0)
+            echo "Deneme $i - Boyut: $SIZE bayt"
+            if [ "$SIZE" -gt 100000 ]; then ok=1; break; fi
+            sleep 5
+          done
+          [ "$ok" = 1 ] || { echo "HATA: Video indirilemedi veya cok kucuk (link suresi dolmus/engellenmis olabilir)"; exit 1; }
+
+      - name: Check video (sadece bilgi icin loga yazar)
+        run: |
+          echo "--- VIDEO ---"
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,profile,width,height,r_frame_rate,bit_rate -of default=nw=1 video.mp4
+          echo "--- SES ---"
+          ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels,bit_rate -of default=nw=1 video.mp4
+          echo "--- SURE ---"
+          ffprobe -v error -show_entries format=duration -of default=nw=1 video.mp4
+          echo "--- ILK 60 SN ANAHTAR KARE (keyframe) ZAMANLARI ---"
+          ffprobe -v error -select_streams v:0 -skip_frame nokey -show_entries frame=pts_time -read_intervals "%+60" -of csv=p=0 video.mp4 | head -n 30
+
+          VC=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 video.mp4)
+          AC=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 video.mp4)
+          [ "$VC" = "h264" ] || echo "UYARI: video kodegi h264 degil ($VC), copy modunda yayin acilmayabilir"
+          [ "$AC" = "aac" ] || echo "UYARI: ses kodegi aac degil ($AC), copy modunda yayin acilmayabilir veya ses olmayabilir"
+
+      - name: Stream PRO (video + ses copy, encode yok)
+        env:
+          RTMP_URL: ${{ secrets.PRO_RTMP }}
+        run: |
+          mask() { sed -u -e 's#[A-Za-z]*://[^ ]*#[gizli]#g' -e 's/[Tt][Ww][Ii][Tt][Cc][Hh]/PRO/g' -e 's/live-video\.net/gizli/g' -e 's/contribute/gizli/g'; }
+
+          END=$(( $(date +%s) + 14400 ))   # 4 saatlik yayin penceresi
+
+          while [ "$(date +%s)" -lt "$END" ]; do
+            REMAIN=$(( END - $(date +%s) ))
+            [ "$REMAIN" -lt 10 ] && break
+
+            echo "Yayin baslatiliyor... kalan sure: ${REMAIN} sn"
+
+            timeout "$REMAIN" ffmpeg -hide_banner -loglevel warning \
+              -fflags +genpts \
+              -re -stream_loop -1 -i video.mp4 \
+              -c copy \
+              -f flv "$RTMP_URL" 2>&1 | mask
+
+            echo "Yayin durdu veya koptu, 5 sn sonra yeniden baglaniliyor..."
+            sleep 5
+          done
+
+          echo "4 saatlik pencere doldu, workflow bitiyor (yenisi cron ile baslayacak)."
