@@ -1,0 +1,67 @@
+name: 24-7 PRO Streamer
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */4 * * *' # Her 4 saatte bir yeniden baslatir
+
+# Ayni anda sadece 1 yayin calissin; yenisi eskisi bitince baslasin
+concurrency:
+  group: pro-stream
+  cancel-in-progress: false
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 270
+    steps:
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Download video
+        env:
+          VID_URL: ${{ secrets.VIDEO_URL }}
+        run: |
+          curl -fsSL --retry 5 --retry-delay 3 -o video.ts "$VID_URL"
+          ls -lh video.ts
+
+      - name: Check video (sadece bilgi icin loga yazar)
+        run: |
+          echo "--- VIDEO ---"
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,profile,width,height,r_frame_rate,bit_rate -of default=nw=1 video.ts
+          echo "--- SES ---"
+          ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels,bit_rate -of default=nw=1 video.ts
+          echo "--- SURE ---"
+          ffprobe -v error -show_entries format=duration -of default=nw=1 video.ts
+          echo "--- ILK 60 SN ANAHTAR KARE (keyframe) ZAMANLARI ---"
+          ffprobe -v error -select_streams v:0 -skip_frame nokey -show_entries frame=pts_time -read_intervals "%+60" -of csv=p=0 video.ts | head -n 30
+
+      - name: Stream PRO (video copy, ses AAC 192k/48kHz)
+        env:
+          RTMP_URL: ${{ secrets.PRO_RTMP }}
+        run: |
+          END=$(( $(date +%s) + 14400 ))   # 4 saatlik yayin penceresi
+
+          while [ "$(date +%s)" -lt "$END" ]; do
+            REMAIN=$(( END - $(date +%s) ))
+            [ "$REMAIN" -lt 10 ] && break
+
+            echo "Yayin baslatiliyor... kalan sure: ${REMAIN} sn"
+
+            # ffmpeg ciktisindaki adresler/isimler public logda gorunmesin diye filtrelenir
+            timeout "$REMAIN" ffmpeg -hide_banner -loglevel warning \
+              -fflags +genpts \
+              -re -stream_loop -1 -i video.ts \
+              -c:v copy \
+              -c:a aac -b:a 192k -ar 48000 \
+              -f flv "$RTMP_URL" 2>&1 \
+              | sed -u -e 's#[A-Za-z]*://[^ ]*#[gizli]#g' \
+                       -e 's/[Tt][Ww][Ii][Tt][Cc][Hh]/PRO/g' \
+                       -e 's/live-video\.net/gizli/g' \
+                       -e 's/contribute/gizli/g'
+
+            echo "Yayin durdu veya koptu, 5 sn sonra yeniden baglaniliyor..."
+            sleep 5
+          done
+
+          echo "4 saatlik pencere doldu, workflow bitiyor (yenisi cron ile baslayacak)."
