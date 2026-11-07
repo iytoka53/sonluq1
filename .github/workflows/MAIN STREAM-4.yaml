@@ -28,8 +28,8 @@ jobs:
         env:
           RTMP_URL: ${{ secrets.TWITCH_RTMP }}
         run: |
-          # Is basladigindan itibaren toplam 5 saat 50 dakika (21000 sn) yayin penceresi
-          END=$(( JOB_START + 21000 ))
+          # Is basladigindan itibaren toplam 5 saat 50 dakika (600 sn) yayin penceresi
+          END=$(( JOB_START + 600 ))
 
           while [ "$(date +%s)" -lt "$END" ]; do
             REMAIN=$(( END - $(date +%s) ))
