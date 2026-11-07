@@ -1,0 +1,83 @@
+name: 24-7 Twitch Streamer
+
+on:
+  workflow_dispatch:   # BASLAT tusu: Actions sekmesinde "Run workflow"
+
+# Ayni anda sadece 1 yayin calissin; yenisi eskisi bitince baslasin
+concurrency:
+  group: twitch-stream
+  cancel-in-progress: false
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - name: Baslangic zamanini kaydet
+        run: echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Download video
+        env:
+          VID_URL: ${{ secrets.VIDEO_URL }}
+        run: curl -L --retry 5 --retry-delay 3 -o video.mp4 "$VID_URL"
+
+      - name: Stream to Twitch (video + ses copy, encode yok)
+        env:
+          RTMP_URL: ${{ secrets.TWITCH_RTMP }}
+        run: |
+          # Is basladigindan itibaren toplam 5 saat 50 dakika (21000 sn) yayin penceresi
+          END=$(( JOB_START + 21000 ))
+
+          while [ "$(date +%s)" -lt "$END" ]; do
+            REMAIN=$(( END - $(date +%s) ))
+            [ "$REMAIN" -lt 10 ] && break
+
+            echo "Yayin baslatiliyor... kalan sure: ${REMAIN} sn"
+            timeout "$REMAIN" ffmpeg -hide_banner -loglevel warning \
+              -re -stream_loop -1 -i video.mp4 \
+              -c copy \
+              -f flv "$RTMP_URL" || echo "Yayin koptu, 5 sn sonra yeniden baglaniliyor..."
+
+            sleep 5
+          done
+
+          echo "5 saat 50 dakikalik pencere doldu, bitiriliyor (yenisi otomatik baslatilacak)."
+
+  restart:
+    # Yayin isi bitince (basarili, hatali ya da zaman asimi) yenisini baslatir.
+    # SADECE tum calisma iptal edilmediyse (DURDUR'a basilmadiysa) calisir.
+    needs: stream
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: write
+    steps:
+      - name: Yeni yayini baslat
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          START_TS=$(date -d "${{ github.run_started_at }}" +%s)
+          ELAPSED=$(( $(date +%s) - START_TS ))
+
+          # Is cok erken bittiyse (1 saatten az) bir hata vardir; hizli donguye girmesin diye 5 dk bekle
+          if [ "$ELAPSED" -lt 3600 ]; then
+            echo "Calisma cok erken bitti (${ELAPSED} sn), hata olabilir. 5 dakika bekleniyor..."
+            sleep 300
+          fi
+
+          for i in 1 2 3 4 5; do
+            if gh workflow run "${{ github.workflow }}" --ref "${{ github.ref_name }}"; then
+              echo "Yeni yayin baslatildi."
+              exit 0
+            fi
+            echo "Deneme $i basarisiz, 20 sn sonra tekrar deneniyor..."
+            sleep 20
+          done
+
+          echo "HATA: Yeni yayin baslatilamadi!"
+          exit 1
